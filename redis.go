@@ -38,6 +38,7 @@ func (redis *Redis) KeyCount() int {
 		reply interface{}
 		err   error
 	)
+	log.Debug("getting redis database key count")
 	conn := redis.Pool.Get()
 	if conn == nil {
 		log.Error("error connecting to redis")
@@ -54,6 +55,7 @@ func (redis *Redis) KeyCount() int {
 		log.Error("error parsing dbsize:", err)
 		return -1
 	}
+	log.Debugf("redis database key count: %d", dbsize)
 	return dbsize
 }
 
@@ -90,16 +92,20 @@ func (redis *Redis) LoadZones() {
 	cursorBatchSize := 1000
 	keysSeen := map[string]bool{}
 	for {
+		log.Debugf("scanning redis zones: cursor=%d match=%q count=%d", cursor, matchPattern, cursorBatchSize)
 		reply, err = conn.Do("SCAN", cursor, "MATCH", matchPattern, "COUNT", cursorBatchSize)
 		if err != nil {
+			log.Errorf("error scanning redis zones with match %q: %v", matchPattern, err)
 			return
 		}
 
 		scanReply, err := decodeScanReply(reply)
 		if err != nil {
+			log.Errorf("error parsing redis SCAN reply: %v", err)
 			return
 		}
 		cursor = scanReply.cursor
+		log.Debugf("redis zone scan batch returned %d keys; next cursor=%d", len(scanReply.keys), cursor)
 
 		for _, zone := range scanReply.keys {
 			// Note: a given element may be returned multiple times. It is up to
@@ -111,6 +117,7 @@ func (redis *Redis) LoadZones() {
 
 				zones = append(zones, zone)
 				keysSeen[zone] = true
+				log.Debugf("discovered redis zone: %s", zone)
 			}
 		}
 
@@ -123,6 +130,7 @@ func (redis *Redis) LoadZones() {
 	redis.LastZoneUpdate = time.Now()
 	redis.lastKeyCount = redis.KeyCount()
 	redis.Zones = zones
+	log.Debugf("loaded %d redis zones", len(zones))
 }
 
 func (redis *Redis) A(name string, z *Zone, record *Record) (answers, extras []dns.RR) {
@@ -299,6 +307,7 @@ func (redis *Redis) CAA(name string, z *Zone, record *Record) (answers, extras [
 }
 
 func (redis *Redis) AXFR(z *Zone) (records []dns.RR) {
+	log.Debugf("building AXFR response for zone %s with %d locations", z.Name, len(z.Locations))
 	//soa, _ := redis.SOA(z.Name, z, record)
 	soa := make([]dns.RR, 0)
 	answers := make([]dns.RR, 0, 10)
@@ -351,7 +360,7 @@ func (redis *Redis) AXFR(z *Zone) (records []dns.RR) {
 	records = append(records, extras...)
 	records = append(records, soa...)
 
-	log.Debug(records)
+	log.Debugf("built AXFR response for zone %s with %d records", z.Name, len(records))
 	return
 }
 
@@ -362,8 +371,10 @@ func (redis *Redis) hosts(name string, z *Zone) []dns.RR {
 	)
 	location := redis.findLocation(name, z)
 	if location == "" {
+		log.Debugf("no additional records found for host %s in zone %s", name, z.Name)
 		return nil
 	}
+	log.Debugf("loading additional records for host %s from location %s in zone %s", name, location, z.Name)
 	record = redis.get(location, z)
 	a, _ := redis.A(name, z, record)
 	answers = append(answers, a...)
@@ -402,12 +413,14 @@ func (redis *Redis) findLocation(query string, z *Zone) string {
 
 	// request for zone records
 	if query == z.Name {
+		log.Debugf("query %s matched zone apex %s", query, z.Name)
 		return query
 	}
 
 	query = strings.TrimSuffix(query, "."+z.Name)
 
 	if _, ok = z.Locations[query]; ok {
+		log.Debugf("query matched exact redis location %s in zone %s", query, z.Name)
 		return query
 	}
 
@@ -417,14 +430,17 @@ func (redis *Redis) findLocation(query string, z *Zone) string {
 		ssExists := keyExists(sourceOfSynthesis, z)
 		if ceExists {
 			if ssExists {
+				log.Debugf("query %s matched wildcard redis location %s in zone %s", query, sourceOfSynthesis, z.Name)
 				return sourceOfSynthesis
 			} else {
+				log.Debugf("query %s has closest encloser %s but no wildcard source in zone %s", query, closestEncloser, z.Name)
 				return ""
 			}
 		} else {
 			closestEncloser, sourceOfSynthesis, ok = splitQuery(closestEncloser)
 		}
 	}
+	log.Debugf("query %s did not match any redis location in zone %s", query, z.Name)
 	return ""
 }
 
@@ -449,20 +465,24 @@ func (redis *Redis) get(key string, z *Zone) *Record {
 	}
 
 	redisKey := redis.keyPrefix + z.Name + redis.keySuffix
+	log.Debugf("loading redis record: key=%q field=%q", redisKey, label)
 	reply, err = conn.Do("HGET", redisKey, label)
 	if err != nil {
+		log.Errorf("error getting redis record key %q field %q: %v", redisKey, label, err)
 		return nil
 	}
 	val, err = redisCon.String(reply, nil)
 	if err != nil {
+		log.Errorf("error parsing redis record key %q field %q as string: %v", redisKey, label, err)
 		return nil
 	}
 	r := new(Record)
 	err = json.Unmarshal([]byte(val), r)
 	if err != nil {
-		log.Errorf("JSON-decoding error for redis key \"%s\": %v", redisKey, err)
+		log.Errorf("JSON-decoding error for redis key %q field %q: %v", redisKey, label, err)
 		return nil
 	}
+	log.Debugf("loaded redis record: key=%q field=%q", redisKey, label)
 	return r
 }
 
@@ -501,6 +521,8 @@ func splitQuery(query string) (string, string, bool) {
 }
 
 func (redis *Redis) Connect() {
+	network, address := redis.dialAddress()
+	log.Debugf("configuring redis connection pool: network=%s address=%q", network, address)
 	redis.Pool = &redisCon.Pool{
 		Dial: func() (redisCon.Conn, error) {
 			opts := []redisCon.DialOption{}
@@ -514,8 +536,14 @@ func (redis *Redis) Connect() {
 				opts = append(opts, redisCon.DialReadTimeout(time.Duration(redis.readTimeout)*time.Millisecond))
 			}
 
-			network, address := redis.dialAddress()
-			return redisCon.Dial(network, address, opts...)
+			log.Debugf("dialing redis: network=%s address=%q", network, address)
+			conn, err := redisCon.Dial(network, address, opts...)
+			if err != nil {
+				log.Errorf("error dialing redis network %s address %q: %v", network, address, err)
+				return nil, err
+			}
+			log.Debugf("connected to redis: network=%s address=%q", network, address)
+			return conn, nil
 		},
 	}
 }
@@ -544,7 +572,14 @@ func (redis *Redis) save(zone string, subdomain string, value string) error {
 	}
 	defer conn.Close()
 
-	_, err = conn.Do("HSET", redis.keyPrefix+zone+redis.keySuffix, subdomain, value)
+	redisKey := redis.keyPrefix + zone + redis.keySuffix
+	log.Debugf("saving redis record: key=%q field=%q", redisKey, subdomain)
+	_, err = conn.Do("HSET", redisKey, subdomain, value)
+	if err != nil {
+		log.Errorf("error saving redis record key %q field %q: %v", redisKey, subdomain, err)
+		return err
+	}
+	log.Debugf("saved redis record: key=%q field=%q", redisKey, subdomain)
 	return err
 }
 
@@ -562,14 +597,18 @@ func (redis *Redis) load(zone string) *Zone {
 	}
 	defer conn.Close()
 
-	reply, err = conn.Do("HKEYS", redis.keyPrefix+zone+redis.keySuffix)
+	redisKey := redis.keyPrefix + zone + redis.keySuffix
+	log.Debugf("loading redis zone: key=%q", redisKey)
+	reply, err = conn.Do("HKEYS", redisKey)
 	if err != nil {
+		log.Errorf("error loading redis zone key %q: %v", redisKey, err)
 		return nil
 	}
 	z := new(Zone)
 	z.Name = zone
 	vals, err = redisCon.Strings(reply, nil)
 	if err != nil {
+		log.Errorf("error parsing redis zone key %q fields: %v", redisKey, err)
 		return nil
 	}
 	z.Locations = make(map[string]struct{})
@@ -577,6 +616,7 @@ func (redis *Redis) load(zone string) *Zone {
 		z.Locations[val] = struct{}{}
 	}
 
+	log.Debugf("loaded redis zone %s with %d locations", zone, len(z.Locations))
 	return z
 }
 
@@ -592,6 +632,7 @@ func decodeScanReply(reply interface{}) (scanReply *RedisScanReply, err error) {
 	cursorBytes := reply.([]interface{})[0].([]uint8)
 	cursor, err := strconv.Atoi(string(cursorBytes))
 	if err != nil {
+		log.Errorf("error parsing redis SCAN cursor %q: %v", string(cursorBytes), err)
 		return nil, err
 	}
 	scanReply.cursor = cursor
