@@ -9,6 +9,7 @@ import (
 	"github.com/miekg/dns"
 
 	"github.com/coredns/coredns/plugin"
+	"github.com/coredns/coredns/plugin/pkg/fall"
 	clog "github.com/coredns/coredns/plugin/pkg/log"
 
 	redisCon "github.com/gomodule/redigo/redis"
@@ -18,6 +19,7 @@ var log = clog.NewWithPlugin("redis")
 
 type Redis struct {
 	Next           plugin.Handler
+	Fall           fall.F
 	Pool           *redisCon.Pool
 	redisAddress   string
 	redisPassword  string
@@ -34,26 +36,27 @@ type Redis struct {
 func (redis *Redis) KeyCount() int {
 	var (
 		reply interface{}
-		err error
+		err   error
 	)
 	conn := redis.Pool.Get()
 	if conn == nil {
 		log.Error("error connecting to redis")
-		return -1;
+		return -1
 	}
 	defer conn.Close()
 	reply, err = conn.Do("DBSIZE")
 	if err != nil {
 		log.Error("error getting dbsize from redis:", err)
-		return -1;
+		return -1
 	}
 	dbsize, err := redisCon.Int(reply, nil)
 	if err != nil {
 		log.Error("error parsing dbsize:", err)
-		 return -1
+		return -1
 	}
-	return dbsize;
-} 
+	return dbsize
+}
+
 type RedisScanReply struct {
 	cursor int
 	keys   []string
@@ -511,8 +514,23 @@ func (redis *Redis) Connect() {
 				opts = append(opts, redisCon.DialReadTimeout(time.Duration(redis.readTimeout)*time.Millisecond))
 			}
 
-			return redisCon.Dial("tcp", redis.redisAddress, opts...)
+			network, address := redis.dialAddress()
+			return redisCon.Dial(network, address, opts...)
 		},
+	}
+}
+
+func (redis *Redis) dialAddress() (network, address string) {
+	address = redis.redisAddress
+	switch {
+	case strings.HasPrefix(address, "unix://"):
+		return "unix", strings.TrimPrefix(address, "unix://")
+	case strings.HasPrefix(address, "unix:"):
+		return "unix", strings.TrimPrefix(address, "unix:")
+	case strings.HasPrefix(address, "/"):
+		return "unix", address
+	default:
+		return "tcp", address
 	}
 }
 

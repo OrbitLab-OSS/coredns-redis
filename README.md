@@ -31,16 +31,18 @@ redis {
     connect_timeout TIMEOUT
     read_timeout TIMEOUT
     ttl TTL
+    fallthrough [ZONES...]
 }
 ~~~
 
-* `address` is redis server address to connect in the form of *host:port* or *ip:port*.
+* `address` is redis server address to connect in the form of *host:port*, *ip:port*, or a UNIX socket path. UNIX sockets can be configured as */path/to/redis.sock*, *unix:/path/to/redis.sock*, or *unix:///path/to/redis.sock*.
 * `password` is redis server *auth* key
 * `connect_timeout` time in ms to wait for redis server to connect
 * `read_timeout` time in ms to wait for redis server to respond
 * `ttl` default ttl for dns records, 300 if not provided
 * `prefix` add PREFIX to all redis keys
 * `suffix` add SUFFIX to all redis keys
+* `fallthrough` pass NXDOMAIN responses to the next plugin. If zones are provided, only queries in those zones will fall through.
 
 ## examples
 
@@ -53,6 +55,14 @@ redis {
         read_timeout 100
         ttl 360
         prefix _dns:
+    }
+}
+~~~
+
+~~~ corefile
+. {
+    redis example.com {
+        address /var/run/redis/redis.sock
     }
 }
 ~~~

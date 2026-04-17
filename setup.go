@@ -89,6 +89,8 @@ func redisParse(c *caddy.Controller) (*Redis, error) {
 						val = defaultTtl
 					}
 					redis.Ttl = uint32(val)
+				case "fallthrough":
+					redis.Fall.SetZonesFromArgs(c.RemainingArgs())
 				default:
 					if c.Val() != "}" {
 						return &Redis{}, c.Errf("unknown property '%s'", c.Val())

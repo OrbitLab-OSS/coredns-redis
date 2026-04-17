@@ -64,6 +64,9 @@ func (redis *Redis) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.M
 
 	location := redis.findLocation(qname, z)
 	if len(location) == 0 { // empty, no results
+		if redis.Fall.Through(qname) {
+			return plugin.NextOrFailure(qname, redis.Next, ctx, w, r)
+		}
 		return redis.errorResponse(state, zone, dns.RcodeNameError, nil)
 	}
 
