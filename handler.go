@@ -22,6 +22,7 @@ func (redis *Redis) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.M
 
 	zone := plugin.Zones(redis.Zones).Matches(qname)
 	if zone == "" {
+		log.Debugf("no matching redis zone for query %s; loaded zones=%v", qname, redis.Zones)
 		return plugin.NextOrFailure(qname, redis.Next, ctx, w, r)
 	}
 

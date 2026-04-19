@@ -40,8 +40,7 @@ func (redis *Redis) KeyCount() int {
 	)
 	log.Debug("getting redis database key count")
 	conn := redis.Pool.Get()
-	if conn == nil {
-		log.Error("error connecting to redis")
+	if !redis.checkConn(conn, "getting redis database key count") {
 		return -1
 	}
 	defer conn.Close()
@@ -74,8 +73,7 @@ func (redis *Redis) LoadZones() {
 	log.Debug("loading zones")
 
 	conn := redis.Pool.Get()
-	if conn == nil {
-		log.Error("error connecting to redis")
+	if !redis.checkConn(conn, "loading zones") {
 		return
 	}
 	defer conn.Close()
@@ -451,8 +449,7 @@ func (redis *Redis) get(key string, z *Zone) *Record {
 		val   string
 	)
 	conn := redis.Pool.Get()
-	if conn == nil {
-		log.Error("error connecting to redis")
+	if !redis.checkConn(conn, "loading redis record") {
 		return nil
 	}
 	defer conn.Close()
@@ -562,12 +559,23 @@ func (redis *Redis) dialAddress() (network, address string) {
 	}
 }
 
+func (redis *Redis) checkConn(conn redisCon.Conn, operation string) bool {
+	if conn == nil {
+		log.Errorf("error connecting to redis while %s: connection is nil", operation)
+		return false
+	}
+	if err := conn.Err(); err != nil {
+		log.Errorf("error connecting to redis while %s: %v", operation, err)
+		return false
+	}
+	return true
+}
+
 func (redis *Redis) save(zone string, subdomain string, value string) error {
 	var err error
 
 	conn := redis.Pool.Get()
-	if conn == nil {
-		log.Error("error connecting to redis")
+	if !redis.checkConn(conn, "saving redis record") {
 		return nil
 	}
 	defer conn.Close()
@@ -591,8 +599,7 @@ func (redis *Redis) load(zone string) *Zone {
 	)
 
 	conn := redis.Pool.Get()
-	if conn == nil {
-		log.Error("error connecting to redis")
+	if !redis.checkConn(conn, "loading redis zone") {
 		return nil
 	}
 	defer conn.Close()
