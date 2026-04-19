@@ -56,6 +56,16 @@ func redisParse(c *caddy.Controller) (*Redis, error) {
 						return &Redis{}, c.ArgErr()
 					}
 					redis.redisPassword = c.Val()
+				case "database":
+					if !c.NextArg() {
+						return &Redis{}, c.ArgErr()
+					}
+					var val int
+					val, err = strconv.Atoi(c.Val())
+					if err != nil {
+						val = defaultDatabase
+					}
+					redis.redisDatabase = uint32(val)
 				case "prefix":
 					if !c.NextArg() {
 						return &Redis{}, c.ArgErr()

@@ -23,6 +23,7 @@ type Redis struct {
 	Pool           *redisCon.Pool
 	redisAddress   string
 	redisPassword  string
+	redisDatabase  uint32
 	connectTimeout int
 	readTimeout    int
 	keyPrefix      string
@@ -532,6 +533,9 @@ func (redis *Redis) Connect() {
 			if redis.readTimeout != 0 {
 				opts = append(opts, redisCon.DialReadTimeout(time.Duration(redis.readTimeout)*time.Millisecond))
 			}
+			if redis.redisDatabase != 0 {
+				opts = append(opts, redisCon.DialDatabase(int(redis.redisDatabase)))
+			}
 
 			log.Debugf("dialing redis: network=%s address=%q", network, address)
 			conn, err := redisCon.Dial(network, address, opts...)
@@ -678,8 +682,9 @@ func split255(s string) []string {
 }
 
 const (
-	defaultTtl     = 360
-	hostmaster     = "hostmaster"
-	zoneUpdateTime = 10 * time.Minute
-	transferLength = 1000
+	defaultTtl      = 360
+	defaultDatabase = 0
+	hostmaster      = "hostmaster"
+	zoneUpdateTime  = 10 * time.Minute
+	transferLength  = 1000
 )

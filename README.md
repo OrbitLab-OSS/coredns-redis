@@ -26,6 +26,7 @@ Address will default to local redis server (localhost:6379)
 redis {
     address ADDR
     password PWD
+    database DB
     prefix PREFIX
     suffix SUFFIX
     connect_timeout TIMEOUT
@@ -37,6 +38,7 @@ redis {
 
 * `address` is redis server address to connect in the form of *host:port*, *ip:port*, or a UNIX socket path. UNIX sockets can be configured as */path/to/redis.sock*, *unix:/path/to/redis.sock*, or *unix:///path/to/redis.sock*.
 * `password` is redis server *auth* key
+* `database` is redis database, default is 0
 * `connect_timeout` time in ms to wait for redis server to connect
 * `read_timeout` time in ms to wait for redis server to respond
 * `ttl` default ttl for dns records, 300 if not provided
