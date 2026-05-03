@@ -1,4 +1,4 @@
-module github.com/rverst/coredns-redis/plugin
+module github.com/OrbitLab-OSS/coredns-redis/plugin
 
 go 1.25.0
 
