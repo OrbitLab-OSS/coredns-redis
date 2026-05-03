@@ -1,117 +1,104 @@
 package redis
 
 import (
-	"testing"
-	"fmt"
 	"math/rand"
+	"testing"
+	"time"
 
 	"github.com/coredns/coredns/plugin/pkg/dnstest"
 	"github.com/coredns/coredns/plugin/test"
-
 	"github.com/miekg/dns"
+	"golang.org/x/net/context"
 )
 
-var zone string = "example.com."
-
-var benchmarkEntries = [][]string{
-	{"@",
-		"{\"a\":[{\"ttl\":300, \"ip\":\"2.2.2.2\"}]}",
-	},
-	{"x",
-		"{\"a\":[{\"ttl\":300, \"ip\":\"3.3.3.3\"}]}",
-	},
-	{"y",
-		"{\"a\":[{\"ttl\":300, \"ip\":\"4.4.4.4\"}]}",
-	},
-	{"z",
-		"{\"a\":[{\"ttl\":300, \"ip\":\"5.5.5.5\"}]}",
-	},
-}
-
-var testCasesHit = []test.Case {
+var benchmarkHits = []test.Case{
 	{
-		Qname: "example.com.", Qtype: dns.TypeA,
+		Qname: "example.com.", Qtype: dns.TypeSOA,
 		Answer: []dns.RR{
-			test.A("example.com. 300 IN A 2.2.2.2"),
+			test.SOA("example.com. 300 IN SOA ns1.example.com. hostmaster.example.com. 0 44 55 66 100"),
 		},
 	},
 	{
 		Qname: "x.example.com.", Qtype: dns.TypeA,
 		Answer: []dns.RR{
-			test.A("x.example.com. 300 IN A 3.3.3.3"),
+			test.A("x.example.com. 300 IN A 1.2.3.4"),
+			test.A("x.example.com. 300 IN A 5.6.7.8"),
 		},
 	},
 	{
-		Qname: "y.example.com.", Qtype: dns.TypeA,
+		Qname: "host3.example.net.", Qtype: dns.TypeTXT,
 		Answer: []dns.RR{
-			test.A("y.example.com. 300 IN A 4.4.4.4"),
-		},
-	},
-	{
-		Qname: "z.example.com.", Qtype: dns.TypeA,
-		Answer: []dns.RR{
-			test.A("z.example.com. 300 IN A 5.5.5.5"),
+			test.TXT("host3.example.net. 300 IN TXT \"this is a wildcard\""),
 		},
 	},
 }
 
-var testCasesMiss = []test.Case {
-	{
-		Qname: "q.example.com.", Qtype: dns.TypeA,
-		Rcode: dns.RcodeNameError,
-	},
-	{
-		Qname: "w.example.com.", Qtype: dns.TypeA,
-		Rcode: dns.RcodeNameError,
-	},
-	{
-		Qname: "e.example.com.", Qtype: dns.TypeA,
-		Rcode: dns.RcodeNameError,
-	},
-	{
-		Qname: "r.example.com.", Qtype: dns.TypeA,
-		Rcode: dns.RcodeNameError,
-	},
+var benchmarkMisses = []test.Case{
+	{Qname: "q.example.com.", Qtype: dns.TypeA, Rcode: dns.RcodeNameError},
+	{Qname: "w.example.com.", Qtype: dns.TypeA, Rcode: dns.RcodeNameError},
+	{Qname: "e.example.com.", Qtype: dns.TypeA, Rcode: dns.RcodeNameError},
 }
 
 func BenchmarkHit(b *testing.B) {
-	fmt.Println("benchmark test")
-	r := newRedisPlugin()
-	conn := r.Pool.Get()
-	defer conn.Close()
-	conn.Do("EVAL", "return redis.call('del', unpack(redis.call('keys', ARGV[1])))", 0, r.keyPrefix + "*" + r.keySuffix)
-	for _, cmd := range benchmarkEntries {
-		err := r.save(zone, cmd[0], cmd[1])
-		if err != nil {
-			fmt.Println("error in redis", err)
-		}
-	}
+	plugin := newBenchmarkPlugin(b)
+	queries := benchmarkMessages(benchmarkHits)
+	source := rand.New(rand.NewSource(1))
+
 	b.ResetTimer()
-	for i :=0; i<b.N; i++ {
-		j := rand.Intn(len(testCasesHit))
-		m := testCasesHit[j].Msg()
+	for i := 0; i < b.N; i++ {
 		rec := dnstest.NewRecorder(&test.ResponseWriter{})
-		r.ServeDNS(ctxt, rec, m)
+		plugin.ServeDNS(context.TODO(), rec, queries[source.Intn(len(queries))])
 	}
 }
 
 func BenchmarkMiss(b *testing.B) {
-	fmt.Println("benchmark test")
-	r := newRedisPlugin()
-	conn := r.Pool.Get()
-	defer conn.Close()
-	conn.Do("EVAL", "return redis.call('del', unpack(redis.call('keys', ARGV[1])))", 0, r.keyPrefix + "*" + r.keySuffix)
-	for _, cmd := range benchmarkEntries {
-		err := r.save(zone, cmd[0], cmd[1])
-		if err != nil {
-			fmt.Println("error in redis", err)
-		}
-	}
+	plugin := newBenchmarkPlugin(b)
+	queries := benchmarkMessages(benchmarkMisses)
+	source := rand.New(rand.NewSource(1))
+
 	b.ResetTimer()
-	for i :=0; i<b.N; i++ {
-		j := rand.Intn(len(testCasesMiss))
-		m := testCasesMiss[j].Msg()
+	for i := 0; i < b.N; i++ {
 		rec := dnstest.NewRecorder(&test.ResponseWriter{})
-		r.ServeDNS(ctxt, rec, m)
+		plugin.ServeDNS(context.TODO(), rec, queries[source.Intn(len(queries))])
 	}
+}
+
+func benchmarkMessages(cases []test.Case) []*dns.Msg {
+	messages := make([]*dns.Msg, 0, len(cases))
+	for _, tc := range cases {
+		messages = append(messages, tc.Msg())
+	}
+	return messages
+}
+
+func newBenchmarkPlugin(b *testing.B) *Redis {
+	b.Helper()
+
+	backend := defaultLookupBackend()
+	cache, err := newDiskCache(cacheConfig{
+		path:            b.TempDir(),
+		maxEntries:      128,
+		maxEntrySize:    defaultCacheMaxEntrySize,
+		cleanupInterval: time.Minute,
+	})
+	if err != nil {
+		b.Fatalf("newDiskCache() error = %v", err)
+	}
+
+	plugin := &Redis{
+		backend:       backend,
+		cache:         cache,
+		zones:         newZoneStore(backend, time.Hour),
+		defaultTTL:    defaultPluginTTL,
+		maxRecordSize: defaultRecordSizeLimit,
+		metrics:       &pluginMetrics{},
+		logLimiter: &rateLimitedLogger{
+			interval: time.Millisecond,
+			last:     map[string]time.Time{},
+		},
+	}
+	if err := plugin.zones.Initialize(); err != nil {
+		b.Fatalf("Initialize() error = %v", err)
+	}
+	return plugin
 }

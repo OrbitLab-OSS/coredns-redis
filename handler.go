@@ -1,7 +1,7 @@
 package redis
 
 import (
-	"time"
+	"errors"
 
 	"github.com/coredns/coredns/plugin"
 	"github.com/coredns/coredns/request"
@@ -10,123 +10,122 @@ import (
 )
 
 // ServeDNS implements the plugin.Handler interface.
-func (redis *Redis) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) (int, error) {
-	state := request.Request{W: w, Req: r}
+func (r *Redis) ServeDNS(ctx context.Context, w dns.ResponseWriter, req *dns.Msg) (int, error) {
+	state := request.Request{W: w, Req: req}
 
-	qname := state.Name()
+	qname := normalizeQuestionName(state.Name())
 	qtype := state.Type()
 
-	if time.Since(redis.LastZoneUpdate) > zoneUpdateTime || redis.lastKeyCount != redis.KeyCount() {
-		redis.LoadZones()
+	zoneName := r.zones.Match(qname)
+	if zoneName == "" {
+		return plugin.NextOrFailure(qname, r.Next, ctx, w, req)
 	}
 
-	zone := plugin.Zones(redis.Zones).Matches(qname)
-	if zone == "" {
-		log.Debugf("no matching redis zone for query %s; loaded zones=%v", qname, redis.Zones)
-		return plugin.NextOrFailure(qname, redis.Next, ctx, w, r)
-	}
-
-	z := redis.load(zone)
-	if z == nil {
-		return redis.errorResponse(state, zone, dns.RcodeServerFailure, nil)
+	zone, err := r.zones.Get(zoneName)
+	if err != nil || zone == nil {
+		r.logRedisError("zone-load", "error loading redis zone %q: %v", zoneName, err)
+		return r.errorResponse(state, dns.RcodeServerFailure, nil)
 	}
 
 	if qtype == "AXFR" {
-		records := redis.AXFR(z)
-
-		ch := make(chan *dns.Envelope)
-		tr := new(dns.Transfer)
-		tr.TsigSecret = nil
-
-		go func(ch chan *dns.Envelope) {
-			j, l := 0, 0
-
-			for i, r := range records {
-				l += dns.Len(r)
-				if l > transferLength {
-					ch <- &dns.Envelope{RR: records[j:i]}
-					l = 0
-					j = i
-				}
-			}
-			if j < len(records) {
-				ch <- &dns.Envelope{RR: records[j:]}
-			}
-			close(ch)
-		}(ch)
-
-		err := tr.Out(w, r, ch)
-		if err != nil {
-			log.Error(err)
-		}
-		w.Hijack()
-		return dns.RcodeSuccess, nil
+		return r.serveAXFR(w, req, zone)
 	}
 
-	location := redis.findLocation(qname, z)
-	if len(location) == 0 { // empty, no results
-		if redis.Fall.Through(qname) {
-			return plugin.NextOrFailure(qname, redis.Next, ctx, w, r)
+	location := r.findLocation(qname, zone)
+	if location == "" {
+		if r.Fall.Through(qname) {
+			return plugin.NextOrFailure(qname, r.Next, ctx, w, req)
 		}
-		return redis.errorResponse(state, zone, dns.RcodeNameError, nil)
+		return r.errorResponse(state, dns.RcodeNameError, nil)
 	}
 
-	answers := make([]dns.RR, 0, 10)
-	extras := make([]dns.RR, 0, 10)
-
-	record := redis.get(location, z)
+	record, err := r.lookupRecord(zone, qname, location)
+	if err != nil {
+		return r.errorResponse(state, dns.RcodeServerFailure, nil)
+	}
 	if record == nil {
-		// Record may be nil when the redis read returns an error
-		return redis.errorResponse(state, zone, dns.RcodeServerFailure, nil)
+		if r.Fall.Through(qname) {
+			return plugin.NextOrFailure(qname, r.Next, ctx, w, req)
+		}
+		return r.errorResponse(state, dns.RcodeNameError, nil)
 	}
 
-	switch qtype {
-	case "A":
-		answers, extras = redis.A(qname, z, record)
-	case "AAAA":
-		answers, extras = redis.AAAA(qname, z, record)
-	case "CNAME":
-		answers, extras = redis.CNAME(qname, z, record)
-	case "TXT":
-		answers, extras = redis.TXT(qname, z, record)
-	case "NS":
-		answers, extras = redis.NS(qname, z, record)
-	case "MX":
-		answers, extras = redis.MX(qname, z, record)
-	case "SRV":
-		answers, extras = redis.SRV(qname, z, record)
-	case "SOA":
-		answers, extras = redis.SOA(qname, z, record)
-	case "CAA":
-		answers, extras = redis.CAA(qname, z, record)
-
-	default:
-		return redis.errorResponse(state, zone, dns.RcodeNotImplemented, nil)
+	answers, extras, ok := r.answersForType(qtype, qname, zone, record)
+	if !ok {
+		return r.errorResponse(state, dns.RcodeNotImplemented, nil)
 	}
 
-	m := new(dns.Msg)
-	m.SetReply(r)
-	m.Authoritative, m.RecursionAvailable, m.Compress = true, false, true
+	message := new(dns.Msg)
+	message.SetReply(req)
+	message.Authoritative = true
+	message.RecursionAvailable = false
+	message.Compress = true
+	message.Answer = append(message.Answer, answers...)
+	message.Extra = append(message.Extra, extras...)
 
-	m.Answer = append(m.Answer, answers...)
-	m.Extra = append(m.Extra, extras...)
-
-	state.SizeAndDo(m)
-	m = state.Scrub(m)
-	_ = w.WriteMsg(m)
+	state.SizeAndDo(message)
+	message = state.Scrub(message)
+	_ = w.WriteMsg(message)
 	return dns.RcodeSuccess, nil
 }
 
-// Name implements the Handler interface.
-func (redis *Redis) Name() string { return "redis" }
+func (r *Redis) lookupRecord(zone *Zone, qname, location string) (*Record, error) {
+	record, err := r.getRecord(zone.Name, location)
+	if err == nil {
+		return record, nil
+	}
+	if !errors.Is(err, errRecordNotFound) {
+		return nil, err
+	}
 
-func (redis *Redis) errorResponse(state request.Request, zone string, rcode int, err error) (int, error) {
-	m := new(dns.Msg)
-	m.SetRcode(state.Req, rcode)
-	m.Authoritative, m.RecursionAvailable, m.Compress = true, false, true
+	refreshedZone, refreshErr := r.zones.RefreshZone(zone.Name)
+	if refreshErr == nil && refreshedZone != nil {
+		location = r.findLocation(qname, refreshedZone)
+		if location == "" {
+			return nil, nil
+		}
+		return r.safeRecordLookup(refreshedZone.Name, location)
+	}
+	return nil, err
+}
 
-	state.SizeAndDo(m)
-	_ = state.W.WriteMsg(m)
-	// Return success as the rcode to signal we have written to the client.
+func (r *Redis) serveAXFR(w dns.ResponseWriter, req *dns.Msg, zone *Zone) (int, error) {
+	records := r.AXFR(zone)
+
+	ch := make(chan *dns.Envelope)
+	transfer := new(dns.Transfer)
+
+	go func() {
+		start, currentLen := 0, 0
+		for index, rr := range records {
+			currentLen += dns.Len(rr)
+			if currentLen > transferLength {
+				ch <- &dns.Envelope{RR: records[start:index]}
+				start = index
+				currentLen = 0
+			}
+		}
+		if start < len(records) {
+			ch <- &dns.Envelope{RR: records[start:]}
+		}
+		close(ch)
+	}()
+
+	if err := transfer.Out(w, req, ch); err != nil {
+		r.logRedisError("axfr", "error serving AXFR for zone %q: %v", zone.Name, err)
+	}
+	w.Hijack()
+	return dns.RcodeSuccess, nil
+}
+
+func (r *Redis) errorResponse(state request.Request, rcode int, err error) (int, error) {
+	message := new(dns.Msg)
+	message.SetRcode(state.Req, rcode)
+	message.Authoritative = true
+	message.RecursionAvailable = false
+	message.Compress = true
+
+	state.SizeAndDo(message)
+	_ = state.W.WriteMsg(message)
 	return dns.RcodeSuccess, err
 }
