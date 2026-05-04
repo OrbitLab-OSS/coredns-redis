@@ -187,6 +187,27 @@ func TestFQDNNormalizationAndRelativeTargets(t *testing.T) {
 	}
 }
 
+func TestQualifiedTargetWithoutTrailingDotIsNotRebased(t *testing.T) {
+	plugin := newTestPlugin(t, defaultLookupBackend())
+
+	req := new(dns.Msg)
+	req.SetQuestion("qualified.example.com.", dns.TypeSRV)
+	resp := serveTestDNS(t, plugin, req)
+
+	tc := test.Case{
+		Qname: "qualified.example.com.", Qtype: dns.TypeSRV,
+		Answer: []dns.RR{
+			test.SRV("qualified.example.com. 120 IN SRV 10 5 8443 srv1.example.com."),
+		},
+		Extra: []dns.RR{
+			test.A("srv1.example.com. 300 IN A 10.10.10.10"),
+		},
+	}
+	if err := test.SortAndCheck(resp, tc); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestLookupSOAResponse(t *testing.T) {
 	plugin := newTestPlugin(t, defaultLookupBackend())
 

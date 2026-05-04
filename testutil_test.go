@@ -209,6 +209,8 @@ func defaultLookupBackend() *fakeBackend {
 		"sip":       `{"a":[{"ttl":300,"ip":"7.7.7.7"}],"aaaa":[{"ttl":300,"ip":"::1"}]}`,
 		"mail":      `{"a":[{"ttl":300,"ip":"9.9.9.9"}]}`,
 		"rel":       `{"mx":[{"ttl":120,"host":"mail","preference":10}]}`,
+		"qualified": `{"srv":[{"ttl":120,"target":"srv1.example.com","port":8443,"priority":10,"weight":5}]}`,
+		"srv1":      `{"a":[{"ttl":300,"ip":"10.10.10.10"}]}`,
 		"caa":       `{"caa":[{"ttl":180,"flag":0,"tag":"issue","value":"letsencrypt.org"}]}`,
 	})
 	backend.setZone("example.net.", map[string]string{

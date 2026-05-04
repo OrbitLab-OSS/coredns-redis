@@ -335,10 +335,16 @@ func absoluteName(name, zone string) (string, bool) {
 	if name == "" {
 		return "", false
 	}
-	if strings.HasSuffix(name, ".") {
-		name = dns.Fqdn(name)
-	} else {
-		name = dns.Fqdn(name + "." + strings.TrimSuffix(normalizeZone(zone), "."))
+	candidate := dns.Fqdn(name)
+	normalizedZone := normalizeZone(zone)
+
+	switch {
+	case strings.HasSuffix(name, "."):
+		name = candidate
+	case strings.HasSuffix(strings.ToLower(candidate), strings.ToLower(normalizedZone)):
+		name = candidate
+	default:
+		name = dns.Fqdn(name + "." + strings.TrimSuffix(normalizedZone, "."))
 	}
 	return name, isDomainName(name)
 }
